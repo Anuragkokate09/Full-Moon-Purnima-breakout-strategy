@@ -1,0 +1,160 @@
+//@version=5
+strategy(title="Full Moon Purnima Reversal Breakout [NSE/BSE]", shorttitle="🌕 Purnima RevBO STR", overlay=true, pyramiding=0, process_orders_on_close=true, max_labels_count=500, max_lines_count=500)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Inputs
+//──────────────────────────────────────────────────────────────────────────────
+showLines  = input.bool(true,  "Show Opening Range Lines", group="Display")
+showLabels = input.bool(true,  "Show OR & Signal Labels",   group="Display")
+showSLTP   = input.bool(true,  "Show SL / Target",          group="Risk")
+
+buyColor   = input.color(color.new(#00c853, 0),  "BUY Color",       group="Colors")
+sellColor  = input.color(color.new(#ff1744, 0),  "SELL Color",      group="Colors")
+highColor  = input.color(color.new(#00bcd4, 50), "OR High Color",   group="Colors")
+lowColor   = input.color(color.new(#ff9800, 50), "OR Low Color",    group="Colors")
+slColor    = input.color(color.new(color.red, 20), "SL Color",      group="Colors")
+tpColor    = input.color(color.new(color.green, 20), "Target Color", group="Colors")
+
+//──────────────────────────────────────────────────────────────────────────────
+// Full Moon detection
+//──────────────────────────────────────────────────────────────────────────────
+var float SYNODIC_MONTH   = 29.53058867
+var float KNOWN_FULL_MOON = 948427200.0
+var float SECONDS_PER_DAY = 86400.0
+
+barTimeSec   = time / 1000.0
+daysSince    = (barTimeSec - KNOWN_FULL_MOON) / SECONDS_PER_DAY
+totalCycles  = daysSince / SYNODIC_MONTH
+lunarPhase   = totalCycles % 1.0
+if lunarPhase < 0
+    lunarPhase += 1.0
+
+distFromFull = math.abs(lunarPhase - 0.5)
+tolerance    = 0.75 / SYNODIC_MONTH
+isFullMoonDay = distFromFull <= tolerance
+
+//──────────────────────────────────────────────────────────────────────────────
+// IST time handling
+//──────────────────────────────────────────────────────────────────────────────
+barHour   = hour(time, "Asia/Kolkata")
+barMinute = minute(time, "Asia/Kolkata")
+barYear   = year(time, "Asia/Kolkata")
+barMonth  = month(time, "Asia/Kolkata")
+barDay    = dayofmonth(time, "Asia/Kolkata")
+barMins   = barHour * 60 + barMinute
+
+t915  = 9 * 60 + 15
+t930  = 9 * 60 + 30
+t945  = 9 * 60 + 45
+
+//──────────────────────────────────────────────────────────────────────────────
+// State variables
+//──────────────────────────────────────────────────────────────────────────────
+var float orHigh   = na
+var float orLow    = na
+var int   orDate   = na
+var bool  sigFired = false
+var int   sigDate  = na
+var line  lineHigh = na
+var line  lineLow  = na
+var line  slLine   = na
+var line  tpLine   = na
+
+todayKey = barYear * 10000 + barMonth * 100 + barDay
+newDay   = na(orDate) or todayKey != orDate
+
+if newDay
+    orHigh   := na
+    orLow    := na
+    orDate   := todayKey
+    sigFired := false
+    sigDate  := na
+
+//──────────────────────────────────────────────────────────────────────────────
+// Capture 9:15–9:30 candle on Full Moon days
+//──────────────────────────────────────────────────────────────────────────────
+isORCandle = (barMins == t915) and isFullMoonDay
+
+if isORCandle
+    orHigh := high
+    orLow  := low
+
+    if showLines
+        if not na(lineHigh)
+            line.delete(lineHigh)
+        if not na(lineLow)
+            line.delete(lineLow)
+
+        lineHigh := line.new(bar_index, orHigh, bar_index + 1, orHigh, extend=extend.right, color=highColor, width=2, style=line.style_dashed)
+        lineLow  := line.new(bar_index, orLow,  bar_index + 1, orLow,  extend=extend.right, color=lowColor,  width=2, style=line.style_dashed)
+
+    if showLabels
+        label.new(bar_index, orHigh,
+             text="🌕 OR\nH: " + str.tostring(orHigh, "#.00") + "\nL: " + str.tostring(orLow, "#.00"),
+             color=color.new(color.yellow, 15),
+             textcolor=color.black,
+             style=label.style_label_right,
+             size=size.small)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Signal logic: 9:30–9:45 candle close
+// BUY if close < OR Low
+// SELL if close > OR High
+//──────────────────────────────────────────────────────────────────────────────
+isSignalCandle = (barMins > t930) and (barMins <= t945) and isFullMoonDay
+orReady        = not na(orHigh) and not na(orLow)
+noSigYet       = not sigFired and (na(sigDate) or sigDate != todayKey)
+
+buySignal  = isSignalCandle and orReady and noSigYet and close < orLow
+sellSignal = isSignalCandle and orReady and noSigYet and close > orHigh
+
+//──────────────────────────────────────────────────────────────────────────────
+// Strategy orders
+// BUY signal = long entry
+// SELL signal = long exit and optional short entry
+//──────────────────────────────────────────────────────────────────────────────
+if buySignal
+    strategy.entry("Long", strategy.long)
+    label.new(bar_index, low, "▲ BUY\n" + str.tostring(close, "#.00"),
+         color=buyColor, textcolor=color.white, style=label.style_label_up, size=size.large)
+    sigFired := true
+    sigDate  := todayKey
+
+if sellSignal
+    if strategy.position_size > 0
+        strategy.close("Long")
+    strategy.entry("Short", strategy.short)
+    label.new(bar_index, high, "▼ SELL\n" + str.tostring(close, "#.00"),
+         color=sellColor, textcolor=color.white, style=label.style_label_down, size=size.large)
+    sigFired := true
+    sigDate  := todayKey
+
+//──────────────────────────────────────────────────────────────────────────────
+// Optional SL / Target based on OR size
+//──────────────────────────────────────────────────────────────────────────────
+orSize = orReady ? (orHigh - orLow) : na
+
+longSL  = (showSLTP and orReady) ? (orLow) : na
+longTP  = (showSLTP and orReady) ? (close + orSize) : na
+
+shortSL = (showSLTP and orReady) ? (orHigh) : na
+shortTP = (showSLTP and orReady) ? (close - orSize) : na
+
+if showSLTP and strategy.position_size > 0 and orReady
+    strategy.exit("Long Exit", from_entry="Long", stop=longSL, limit=longTP)
+
+if showSLTP and strategy.position_size < 0 and orReady
+    strategy.exit("Short Exit", from_entry="Short", stop=shortSL, limit=shortTP)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Visuals
+//──────────────────────────────────────────────────────────────────────────────
+bgcolor(isFullMoonDay ? color.new(color.yellow, 92) : na, title="Full Moon Day Background")
+plot(orHigh, title="OR High", color=color.new(highColor, 100), display=display.data_window)
+plot(orLow,  title="OR Low",  color=color.new(lowColor, 100), display=display.data_window)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Alerts
+//──────────────────────────────────────────────────────────────────────────────
+alertcondition(buySignal,  title="🌕 Purnima BUY Alert",  message="🌕 Full Moon BUY on {{ticker}} | Price: {{close}} | OR Low broken")
+alertcondition(sellSignal, title="🌕 Purnima SELL Alert", message="🌕 Full Moon SELL on {{ticker}} | Price: {{close}} | OR High broken")
